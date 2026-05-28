@@ -60,9 +60,9 @@ def send_telegram(msg):
         log.warning(f"Telegram: {e}")
 
 def fetch_klines(limit=1000):
-    for host in ["api.binance.us", "api.binance.com"]:
+    for host in ["api.binance.us", "api.binance.com", "fapi.binance.com"]:
         try:
-            path = "/api/v3/klines"
+            path = "/fapi/v1/klines" if "fapi" in host else "/api/v3/klines"
             r = requests.get(f"https://{host}{path}", params={"symbol":SYMBOL,"interval":TIMEFRAME,"limit":limit}, headers=HEADERS, timeout=15)
             if r.status_code == 200:
                 return r.json()
@@ -122,10 +122,19 @@ def bot_loop():
     log.info("Bot iniciado")
     if TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID:
         send_telegram("\U0001F7E2 Bot rodando 24/7")
+        last_heartbeat = int(time.time())
 
     while True:
         try:
             now = datetime.now(timezone.utc)
+            now_ts = int(now.timestamp())
+
+            # Heartbeat a cada 1h (antes do fetch_klines para garantir envio)
+            if now_ts - last_heartbeat >= 3600:
+                last_heartbeat = now_ts
+                status = f"Em {position['side']}" if position else "Aguardando"
+                send_telegram(f"\U0001F7E2 Bot ativo | {status}")
+
             klines = fetch_klines(1000)
             opens = np.array([float(k[1]) for k in klines])
             highs = np.array([float(k[2]) for k in klines])
@@ -143,12 +152,6 @@ def bot_loop():
             for j in range(max(19,199), len(closes)):
                 sma20[j] = np.mean(closes[j-19:j+1])
                 sma200[j] = np.mean(closes[j-199:j+1])
-
-            # Heartbeat a cada 1h
-            if int(now.timestamp()) - last_heartbeat >= 3600:
-                last_heartbeat = int(now.timestamp())
-                status = f"Em {position['side']}" if position else "Aguardando"
-                send_telegram(f"\U0001F7E2 BTC {closes[-1]:,.0f} | {status}")
 
             # Gerenciamento de posicao
             if position is not None:
@@ -245,15 +248,32 @@ app = Flask(__name__)
 @app.route('/health')
 def health():
     uptime = int(time.time() - bot_start)
+    has_tg = bool(TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID)
+    bot_alive = hasattr(app, '_bot_started')
     return jsonify({
         "status": "ok",
         "uptime": f"{uptime//3600}h{(uptime%3600)//60}m",
         "position": position['side'] if position else None,
-        "entry": position['entry'] if position else None
+        "entry": position['entry'] if position else None,
+        "telegram_configured": has_tg,
+        "bot_thread_alive": bot_alive
     })
 
+@app.route('/test-tg')
+def test_telegram():
+    has_tg = bool(TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID)
+    if has_tg:
+        send_telegram("\U0001F7E2 <b>Teste do bot</b> - Telegram funcionando!")
+        return jsonify({"sent": True})
+    return jsonify({"sent": False, "error": "Telegram nao configurado"})
+
+@app.before_request
+def ensure_bot_thread():
+    if not hasattr(app, '_bot_started'):
+        app._bot_started = True
+        t = threading.Thread(target=bot_loop, daemon=True)
+        t.start()
+
 if __name__ == '__main__':
-    t = threading.Thread(target=bot_loop, daemon=True)
-    t.start()
     port = int(os.getenv("PORT", 10000))
     app.run(host="0.0.0.0", port=port)
