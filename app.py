@@ -7,7 +7,7 @@ from flask import Flask, jsonify
 
 # ===== CONFIG =====
 SYMBOLS = ["BTCUSDT", "ETHUSDT", "SOLUSDT"]
-TIMEFRAME = "5m"
+TIMEFRAME = "15m"
 COMP_PCT = 0.6
 ZONE_PCT = 0.3
 POWER_MIN = 0.6
