@@ -144,8 +144,8 @@ def bot_loop():
                 sma20[j] = np.mean(closes[j-19:j+1])
                 sma200[j] = np.mean(closes[j-199:j+1])
 
-            # Heartbeat a cada 6h
-            if int(now.timestamp()) - last_heartbeat >= 21600:
+            # Heartbeat a cada 1h
+            if int(now.timestamp()) - last_heartbeat >= 3600:
                 last_heartbeat = int(now.timestamp())
                 status = f"Em {position['side']}" if position else "Aguardando"
                 send_telegram(f"\U0001F7E2 BTC {closes[-1]:,.0f} | {status}")
