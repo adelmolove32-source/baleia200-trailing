@@ -6,7 +6,7 @@ import requests
 from flask import Flask, jsonify
 
 # ===== CONFIG =====
-SYMBOL = "BTCUSDT"
+SYMBOLS = ["BTCUSDT", "ETHUSDT", "SOLUSDT"]
 TIMEFRAME = "5m"
 COMP_PCT = 0.6
 ZONE_PCT = 0.3
@@ -19,7 +19,7 @@ SLOPE_THRESH = 0.05
 TARGET_R = 5.0
 TRAIL_PCT = 0.5
 MIN_TRAIL_MFE = 0.01
-SWING_LOOKBACK = 12
+SWING_LOOKBACK = 1
 MIN_STOP_PCT = 0.0005
 MAX_STOP_PCT = 0.05
 
@@ -29,9 +29,7 @@ TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "")
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 log = logging.getLogger("bot_render")
 
-position = None
-last_signal = {}
-last_heartbeat = 0
+bots = {}
 bot_start = time.time()
 
 HEADERS = {"User-Agent": "Mozilla/5.0", "Accept": "application/json"}
@@ -59,11 +57,11 @@ def send_telegram(msg):
     except Exception as e:
         log.warning(f"Telegram: {e}")
 
-def fetch_klines(limit=1000):
+def fetch_klines(symbol, limit=1000):
     for host in ["api.binance.us", "api.binance.com", "fapi.binance.com"]:
         try:
             path = "/fapi/v1/klines" if "fapi" in host else "/api/v3/klines"
-            r = requests.get(f"https://{host}{path}", params={"symbol":SYMBOL,"interval":TIMEFRAME,"limit":limit}, headers=HEADERS, timeout=15)
+            r = requests.get(f"https://{host}{path}", params={"symbol":symbol,"interval":TIMEFRAME,"limit":limit}, headers=HEADERS, timeout=15)
             if r.status_code == 200:
                 return r.json()
         except:
@@ -71,7 +69,7 @@ def fetch_klines(limit=1000):
     bybit_int = INTERVAL_MAP.get(TIMEFRAME, 5)
     for _ in range(3):
         try:
-            r = requests.get("https://api.bybit.com/v5/market/kline", params={"category":"spot","symbol":SYMBOL,"interval":bybit_int,"limit":limit}, headers=HEADERS, timeout=10)
+            r = requests.get("https://api.bybit.com/v5/market/kline", params={"category":"spot","symbol":symbol,"interval":bybit_int,"limit":limit}, headers=HEADERS, timeout=10)
             if r.status_code == 200:
                 d = r.json()
                 if d.get("retCode") == 0:
@@ -79,7 +77,7 @@ def fetch_klines(limit=1000):
                     return [[int(v[0]),float(v[1]),float(v[2]),float(v[3]),float(v[4]),float(v[5]),float(v[6]),0,0,0,0] for v in k]
         except:
             time.sleep(1)
-    raise Exception("Falha ao buscar dados")
+    raise Exception(f"Falha ao buscar {symbol}")
 
 def check_signals(opens, highs, lows, closes, times, sma20, sma200, i):
     if np.isnan(sma20[i]) or np.isnan(sma200[i]):
@@ -117,25 +115,31 @@ def check_signals(opens, highs, lows, closes, times, sma20, sma200, i):
         return ('COMP_'+('L' if lado=='LONG' else 'S'), lado, price, times[i])
     return None
 
-def bot_loop():
-    global position, last_signal, last_heartbeat
-    log.info("Bot iniciado")
-    if TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID:
-        send_telegram("\U0001F7E2 Bot rodando 24/7")
-        last_heartbeat = int(time.time())
+def bot_loop(symbol):
+    sym_short = symbol.replace("USDT", "")
+    position = None
+    last_signal = {}
+    last_heartbeat = 0
+
+    log.info(f"{sym_short} iniciado")
 
     while True:
         try:
             now = datetime.now(timezone.utc)
             now_ts = int(now.timestamp())
 
-            # Heartbeat a cada 1h (antes do fetch_klines para garantir envio)
             if now_ts - last_heartbeat >= 3600:
                 last_heartbeat = now_ts
+                price_str = "?"
+                try:
+                    k = fetch_klines(symbol, 2)
+                    price_str = f"${float(k[-1][4]):,.0f}"
+                except:
+                    pass
                 status = f"Em {position['side']}" if position else "Aguardando"
-                send_telegram(f"\U0001F7E2 Bot ativo | {status}")
+                send_telegram(f"\U0001F7E2 {sym_short} {price_str} | {status}")
 
-            klines = fetch_klines(1000)
+            klines = fetch_klines(symbol, 1000)
             opens = np.array([float(k[1]) for k in klines])
             highs = np.array([float(k[2]) for k in klines])
             lows = np.array([float(k[3]) for k in klines])
@@ -172,10 +176,8 @@ def bot_loop():
                         if mfe >= MIN_TRAIL_MFE:
                             new_stop = position['entry'] + TRAIL_PCT*(position['peak']-position['entry'])
                             if new_stop > position['stop']:
-                                old = position['stop']
                                 position['stop'] = new_stop
-                                log.info(f"Trail: {old:.0f} > {new_stop:.0f}")
-                                send_telegram(f"\U0001F817 <b>Stop atualizado</b> ({position['sinal']})\n\U0001F4B0 50% do lucro travado\n${old:,.0f} > ${new_stop:,.0f}")
+                                log.info(f"{sym_short} Trail: {position['stop']:.2f}")
                 else:
                     if r['low'] <= position['target']:
                         exit_price = position['target']; motivo = 'TARGET'
@@ -190,10 +192,8 @@ def bot_loop():
                         if maf >= MIN_TRAIL_MFE:
                             new_stop = position['entry'] - TRAIL_PCT*(position['entry']-position['valley'])
                             if new_stop < position['stop']:
-                                old = position['stop']
                                 position['stop'] = new_stop
-                                log.info(f"Trail: {old:.0f} > {new_stop:.0f}")
-                                send_telegram(f"\U0001F818 <b>Stop atualizado</b> ({position['sinal']})\n\U0001F4B0 50% do lucro travado\n${old:,.0f} > ${new_stop:,.0f}")
+                                log.info(f"{sym_short} Trail: {position['stop']:.2f}")
 
                 if exit_price is not None:
                     pnl = (exit_price-position['entry'])/position['entry']*100 if position['side']=='LONG' else (position['entry']-exit_price)/position['entry']*100
@@ -201,8 +201,8 @@ def bot_loop():
                     h_str = f"{int(hold.total_seconds()//3600)}h{int((hold.total_seconds()%3600)//60)}m"
                     tick = "\U0001F7E2" if position['side']=='LONG' else "\U0001F534"
                     result = "\U0001F4C8 GANHOU" if pnl > 0 else "\U0001F4C9 PERDEU"
-                    msg = f"{tick} <b>SAIDA {position['side']}</b> {result}\n<b>Motivo:</b> {motivo}\n<b>Entrada:</b> ${position['entry']:,.0f}\n<b>Saida:</b> ${exit_price:,.0f}\n<b>PnL:</b> {pnl:+.2f}%\n<b>Duracao:</b> {h_str}"
-                    log.info(f"SAIDA: {motivo} | {pnl:+.2f}%")
+                    msg = f"{tick} <b>{sym_short} SAIDA {position['side']}</b> {result}\n<b>Motivo:</b> {motivo}\n<b>Entrada:</b> ${position['entry']:,.0f}\n<b>Saida:</b> ${exit_price:,.0f}\n<b>PnL:</b> {pnl:+.2f}%\n<b>Duracao:</b> {h_str}"
+                    log.info(f"{sym_short} SAIDA: {motivo} | {pnl:+.2f}%")
                     send_telegram(msg)
                     position = None
 
@@ -225,12 +225,12 @@ def bot_loop():
                                 'valley':entry if lado=='SHORT' else None,'entry_ts':times[i]
                             }
                             tick = "\U0001F7E2" if lado=='LONG' else "\U0001F534"
-                            msg = f"{tick} <b>SINAL {lado}</b> - {tipo}\n{sig_time.strftime('%d/%m %H:%M')}\n<b>Entrada:</b> ${entry:,.0f}\n<b>Stop:</b> ${stop:,.0f} ({sd*100:.2f}%)\n<b>Alvo:</b> ${target:,.0f}"
-                            log.info(f"ENTRADA: {tipo} @ {entry:.0f}")
+                            msg = f"{tick} <b>{sym_short} SINAL {lado}</b> - {tipo}\n{sig_time.strftime('%d/%m %H:%M')}\n<b>Entrada:</b> ${entry:,.0f}\n<b>Stop:</b> ${stop:,.0f} ({sd*100:.2f}%)\n<b>Alvo:</b> ${target:,.0f}"
+                            log.info(f"{sym_short} ENTRADA: {tipo} @ {entry:.0f}")
                             send_telegram(msg)
                             last_signal[lado] = times[i]
 
-            # Sleep ate proximo candle (ou 30s se tiver posicao)
+            # Sleep ate proximo candle
             next_candle = (now + timedelta(minutes=5)).replace(second=10, microsecond=0)
             next_candle = next_candle.replace(minute=(next_candle.minute // 5) * 5)
             sleep = (next_candle - now).total_seconds()
@@ -238,7 +238,7 @@ def bot_loop():
                 time.sleep(min(sleep, 30 if position else 60))
 
         except Exception as e:
-            log.error(f"Erro: {e}", exc_info=True)
+            log.error(f"{sym_short} Erro: {e}", exc_info=True)
             time.sleep(60)
 
 # Flask web server (para Render)
@@ -249,30 +249,34 @@ app = Flask(__name__)
 def health():
     uptime = int(time.time() - bot_start)
     has_tg = bool(TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID)
-    bot_alive = hasattr(app, '_bot_started')
+    status = {}
+    for sym in SYMBOLS:
+        s = sym.replace("USDT", "")
+        status[s] = "rodando" if bots.get(sym, {}).get('started') else "iniciando"
     return jsonify({
         "status": "ok",
         "uptime": f"{uptime//3600}h{(uptime%3600)//60}m",
-        "position": position['side'] if position else None,
-        "entry": position['entry'] if position else None,
         "telegram_configured": has_tg,
-        "bot_thread_alive": bot_alive
+        "bots": status
     })
 
 @app.route('/test-tg')
 def test_telegram():
     has_tg = bool(TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID)
     if has_tg:
-        send_telegram("\U0001F7E2 <b>Teste do bot</b> - Telegram funcionando!")
+        send_telegram("\U0001F7E2 <b>Teste do bot</b> - BTC/ETH/SOL funcionando!")
         return jsonify({"sent": True})
     return jsonify({"sent": False, "error": "Telegram nao configurado"})
 
 @app.before_request
-def ensure_bot_thread():
-    if not hasattr(app, '_bot_started'):
-        app._bot_started = True
-        t = threading.Thread(target=bot_loop, daemon=True)
-        t.start()
+def ensure_bots():
+    if not hasattr(app, '_bots_started'):
+        app._bots_started = True
+        for sym in SYMBOLS:
+            bots[sym] = {'started': True}
+            t = threading.Thread(target=bot_loop, args=(sym,), daemon=True)
+            t.start()
+            log.info(f"Thread {sym} iniciada")
 
 if __name__ == '__main__':
     port = int(os.getenv("PORT", 10000))
