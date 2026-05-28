@@ -19,7 +19,7 @@ SLOPE_THRESH = 0.05
 TARGET_R = 5.0
 TRAIL_PCT = 0.5
 MIN_TRAIL_MFE = 0.01
-SWING_LOOKBACK = 1
+SWING_VALUES = [(1, "S1"), (3, "S3")]
 MIN_STOP_PCT = 0.0005
 MAX_STOP_PCT = 0.05
 
@@ -40,8 +40,8 @@ def calc_slope(arr, idx, lookback):
         return None
     return (arr[idx] - arr[idx - lookback]) / arr[idx - lookback] * 100
 
-def get_swing_stop(highs, lows, idx, side):
-    start = max(0, idx - SWING_LOOKBACK + 1)
+def get_swing_stop(highs, lows, idx, side, lookback):
+    start = max(0, idx - lookback + 1)
     if side == 'LONG':
         return float(np.min(lows[start:idx + 1]))
     return float(np.max(highs[start:idx + 1]))
@@ -115,13 +115,13 @@ def check_signals(opens, highs, lows, closes, times, sma20, sma200, i):
         return ('COMP_'+('L' if lado=='LONG' else 'S'), lado, price, times[i])
     return None
 
-def bot_loop(symbol):
+def bot_loop(symbol, lookback, swing_label):
     sym_short = symbol.replace("USDT", "")
     position = None
     last_signal = {}
     last_heartbeat = 0
 
-    log.info(f"{sym_short} iniciado")
+    log.info(f"{sym_short} {swing_label} iniciado")
 
     while True:
         try:
@@ -137,7 +137,7 @@ def bot_loop(symbol):
                 except:
                     pass
                 status = f"Em {position['side']}" if position else "Aguardando"
-                send_telegram(f"\U0001F7E2 {sym_short} {price_str} | {status}")
+                send_telegram(f"\U0001F7E2 {sym_short} {swing_label} {price_str} | {status}")
 
             klines = fetch_klines(symbol, 1000)
             opens = np.array([float(k[1]) for k in klines])
@@ -201,7 +201,7 @@ def bot_loop(symbol):
                     h_str = f"{int(hold.total_seconds()//3600)}h{int((hold.total_seconds()%3600)//60)}m"
                     tick = "\U0001F7E2" if position['side']=='LONG' else "\U0001F534"
                     result = "\U0001F4C8 GANHOU" if pnl > 0 else "\U0001F4C9 PERDEU"
-                    msg = f"{tick} <b>{sym_short} SAIDA {position['side']}</b> {result}\n<b>Motivo:</b> {motivo}\n<b>Entrada:</b> ${position['entry']:,.0f}\n<b>Saida:</b> ${exit_price:,.0f}\n<b>PnL:</b> {pnl:+.2f}%\n<b>Duracao:</b> {h_str}"
+                    msg = f"{tick} <b>{sym_short} {swing_label} SAIDA {position['side']}</b> {result}\n<b>Motivo:</b> {motivo}\n<b>Entrada:</b> ${position['entry']:,.0f}\n<b>Saida:</b> ${exit_price:,.0f}\n<b>PnL:</b> {pnl:+.2f}%\n<b>Duracao:</b> {h_str}"
                     log.info(f"{sym_short} SAIDA: {motivo} | {pnl:+.2f}%")
                     send_telegram(msg)
                     position = None
@@ -215,7 +215,7 @@ def bot_loop(symbol):
                     if ls is None or (times[i] - ls).total_seconds() >= 3600:
                         prev = i - 1
                         entry = (opens[prev] + closes[prev]) / 2
-                        stop = get_swing_stop(highs, lows, prev, lado)
+                        stop = get_swing_stop(highs, lows, prev, lado, lookback)
                         sd = abs(entry - stop) / entry
                         if sd >= MIN_STOP_PCT and sd <= MAX_STOP_PCT:
                             target = entry + TARGET_R*(entry-stop) if lado=='LONG' else entry - TARGET_R*(stop-entry)
@@ -225,7 +225,7 @@ def bot_loop(symbol):
                                 'valley':entry if lado=='SHORT' else None,'entry_ts':times[i]
                             }
                             tick = "\U0001F7E2" if lado=='LONG' else "\U0001F534"
-                            msg = f"{tick} <b>{sym_short} SINAL {lado}</b> - {tipo}\n{sig_time.strftime('%d/%m %H:%M')}\n<b>Entrada:</b> ${entry:,.0f}\n<b>Stop:</b> ${stop:,.0f} ({sd*100:.2f}%)\n<b>Alvo:</b> ${target:,.0f}"
+                            msg = f"{tick} <b>{sym_short} {swing_label} SINAL {lado}</b> - {tipo}\n{sig_time.strftime('%d/%m %H:%M')}\n<b>Entrada:</b> ${entry:,.0f}\n<b>Stop:</b> ${stop:,.0f} ({sd*100:.2f}%)\n<b>Alvo:</b> ${target:,.0f}"
                             log.info(f"{sym_short} ENTRADA: {tipo} @ {entry:.0f}")
                             send_telegram(msg)
                             last_signal[lado] = times[i]
@@ -252,7 +252,9 @@ def health():
     status = {}
     for sym in SYMBOLS:
         s = sym.replace("USDT", "")
-        status[s] = "rodando" if bots.get(sym, {}).get('started') else "iniciando"
+        for lb, sl in SWING_VALUES:
+            key = f"{sym}_{sl}"
+            status[key] = "rodando" if bots.get(key, {}).get('started') else "iniciando"
     return jsonify({
         "status": "ok",
         "uptime": f"{uptime//3600}h{(uptime%3600)//60}m",
@@ -273,10 +275,12 @@ def ensure_bots():
     if not hasattr(app, '_bots_started'):
         app._bots_started = True
         for sym in SYMBOLS:
-            bots[sym] = {'started': True}
-            t = threading.Thread(target=bot_loop, args=(sym,), daemon=True)
-            t.start()
-            log.info(f"Thread {sym} iniciada")
+            for lookback, swing_label in SWING_VALUES:
+                key = f"{sym}_{swing_label}"
+                bots[key] = {'started': True}
+                t = threading.Thread(target=bot_loop, args=(sym, lookback, swing_label), daemon=True)
+                t.start()
+                log.info(f"Thread {key} iniciada")
 
 if __name__ == '__main__':
     port = int(os.getenv("PORT", 10000))
