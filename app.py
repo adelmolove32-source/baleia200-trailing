@@ -138,7 +138,7 @@ def bot_loop(symbol, lookback, swing_label):
                 price_str = "?"
                 try:
                     k = fetch_klines(symbol, 2)
-                    price_str = f"${float(k[-1][4]):,.0f}"
+                    price_str = f"${float(k[-1][4]):,.2f}"
                 except:
                     pass
                 status = f"Em {position['side']}" if position else "Aguardando"
@@ -206,7 +206,7 @@ def bot_loop(symbol, lookback, swing_label):
                     h_str = f"{int(hold.total_seconds()//3600)}h{int((hold.total_seconds()%3600)//60)}m"
                     tick = "\U0001F7E2" if position['side']=='LONG' else "\U0001F534"
                     result = "\U0001F4C8 GANHOU" if pnl > 0 else "\U0001F4C9 PERDEU"
-                    msg = f"{tick} <b>{sym_short} {swing_label} SAIDA {position['side']}</b> {result}\n<b>Motivo:</b> {motivo}\n<b>Entrada:</b> ${position['entry']:,.0f}\n<b>Saida:</b> ${exit_price:,.0f}\n<b>PnL:</b> {pnl:+.2f}%\n<b>Duracao:</b> {h_str}"
+                    msg = f"{tick} <b>{sym_short} {swing_label} SAIDA {position['side']}</b> {result}\n<b>Motivo:</b> {motivo}\n<b>Entrada:</b> ${position['entry']:,.2f}\n<b>Saida:</b> ${exit_price:,.2f}\n<b>PnL:</b> {pnl:+.2f}%\n<b>Duracao:</b> {h_str}"
                     log.info(f"{sym_short} SAIDA: {motivo} | {pnl:+.2f}%")
                     send_telegram(msg)
                     position = None
@@ -230,7 +230,7 @@ def bot_loop(symbol, lookback, swing_label):
                                 'valley':entry if lado=='SHORT' else None,'entry_ts':times[i]
                             }
                             tick = "\U0001F7E2" if lado=='LONG' else "\U0001F534"
-                            msg = f"{tick} <b>{sym_short} {swing_label} SINAL {lado}</b> - {tipo}\n{sig_time.strftime('%d/%m %H:%M')}\n<b>Entrada:</b> ${entry:,.0f}\n<b>Stop:</b> ${stop:,.0f} ({sd*100:.2f}%)\n<b>Alvo:</b> ${target:,.0f}"
+                            msg = f"{tick} <b>{sym_short} {swing_label} SINAL {lado}</b> - {tipo}\n{sig_time.strftime('%d/%m %H:%M')}\n<b>Entrada:</b> ${entry:,.2f}\n<b>Stop:</b> ${stop:,.2f} ({sd*100:.2f}%)\n<b>Alvo:</b> ${target:,.2f}"
                             log.info(f"{sym_short} ENTRADA: {tipo} @ {entry:.0f}")
                             send_telegram(msg)
                             last_signal[lado] = times[i]
