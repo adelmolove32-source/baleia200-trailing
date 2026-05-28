@@ -12,6 +12,7 @@ COMP_PCT = 0.6
 ZONE_PCT = 0.3
 POWER_MIN = 0.6
 LOOKLEFT = 30
+MIN_SMA200_DIST = 0.0005  # 0.05% min distance from SMA200
 ZONE_LOOKBACK = 10
 SLOPE200_LEN = 5
 SLOPE20_LEN = 3
@@ -49,13 +50,17 @@ def get_swing_stop(highs, lows, idx, side, lookback):
 def send_telegram(msg):
     if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
         return
-    try:
-        r = requests.post(f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage",
-            json={"chat_id": TELEGRAM_CHAT_ID, "text": msg, "parse_mode": "HTML"}, timeout=10)
-        if r.status_code != 200:
-            log.warning(f"Telegram: {r.status_code}")
-    except Exception as e:
-        log.warning(f"Telegram: {e}")
+    for attempt in range(3):
+        try:
+            r = requests.post(f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage",
+                json={"chat_id": TELEGRAM_CHAT_ID, "text": msg, "parse_mode": "HTML"}, timeout=10)
+            if r.status_code == 200:
+                return
+            log.warning(f"Telegram attempt {attempt+1}: {r.status_code}")
+        except Exception as e:
+            log.warning(f"Telegram attempt {attempt+1}: {e}")
+        time.sleep(2 * (attempt + 1))
+    log.error(f"Telegram falhou apos 3 tentativas")
 
 def fetch_klines(symbol, limit=1000):
     for host in ["api.binance.us", "api.binance.com", "fapi.binance.com"]:
@@ -95,7 +100,7 @@ def check_signals(opens, highs, lows, closes, times, sma20, sma200, i):
     z_up = sma200[i] * (1 + ZONE_PCT/100)
     z_dn = sma200[i] * (1 - ZONE_PCT/100)
     near = (z_dn <= price <= z_up) or (z_dn <= lows[i] <= z_up) or (z_dn <= opens[i] <= z_up)
-    surge = near and ((lado=='LONG' and price>sma200[i] and price>sma20[i]) or (lado=='SHORT' and price<sma200[i] and price<sma20[i]))
+    surge = near and ((lado=='LONG' and price>sma200[i]*(1+MIN_SMA200_DIST) and price>sma20[i]) or (lado=='SHORT' and price<sma200[i]*(1-MIN_SMA200_DIST) and price<sma20[i]))
     look_idx = max(200, i - LOOKLEFT)
     nothing = False
     if i - look_idx >= 3:
@@ -105,7 +110,7 @@ def check_signals(opens, highs, lows, closes, times, sma20, sma200, i):
     rng_pct = (hi-lo)/lo*100 if lo>0 else 999
     p20 = abs(price-sma20[i])/sma20[i]*100
     compressed = rng_pct < COMP_PCT and p20 < COMP_PCT*0.5
-    comp_signal = compressed and ((lado=='LONG' and price>sma20[i]) or (lado=='SHORT' and price<sma20[i]))
+    comp_signal = compressed and ((lado=='LONG' and price>sma20[i] and price>sma200[i]*(1+MIN_SMA200_DIST)) or (lado=='SHORT' and price<sma20[i] and price<sma200[i]*(1-MIN_SMA200_DIST)))
     baleia = surge and flat200 and nothing
     if baleia:
         return ('BALEIA_'+('L' if lado=='LONG' else 'S'), lado, price, times[i])
